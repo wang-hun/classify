@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private bool _isDragging;
     private bool _isBusy;
     private int _displayRequestId;
+    private string? _boundaryMessage;
     private Point _dragStart;
     private double _fitScale = 1;
     private double _zoom = 1;
@@ -94,6 +95,7 @@ public partial class MainWindow : Window
 
     private async Task<bool> RefreshImagesAsync(string? preferredPath = null, int? preferredIndex = null, bool manageBusy = true)
     {
+        _boundaryMessage = null;
         var workPath = WorkPathText.Text.Trim();
         if (!Directory.Exists(workPath))
         {
@@ -104,8 +106,9 @@ public partial class MainWindow : Window
             return false;
         }
 
-        var selectedPath = preferredPath ?? (ImageList.SelectedItem as ImageFile)?.FullPath;
+        var selectedPath = preferredPath ?? (preferredIndex is null ? (ImageList.SelectedItem as ImageFile)?.FullPath : null);
         if (manageBusy) SetBusy(true);
+        LoadingText.Text = "正在加载图片列表…";
         StatusText.Text = "正在后台扫描工作路径…";
         try
         {
@@ -127,18 +130,21 @@ public partial class MainWindow : Window
                 ImageList.SelectedItem = null;
             }
 
-            ImageCountText.Text = $"{_images.Count} 张图片";
-            StatusText.Text = result.Unreadable == 0
-                ? "列表已与工作路径同步。"
-                : $"已加载 {_images.Count} 张图片，跳过 {result.Unreadable} 个无法解码的文件。";
+            UpdateSelectionPosition();
             await ShowCurrentImageAsync();
+            if (ImageList.SelectedItem is null || DisplayedImage.Source is not null)
+            {
+                StatusText.Text = result.Unreadable == 0
+                    ? "列表已与工作路径同步。"
+                    : $"已加载 {_images.Count} 张图片，跳过 {result.Unreadable} 个无法解码的文件。";
+            }
             return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             _images.Clear();
             ImageList.SelectedItem = null;
-            ImageCountText.Text = "0 张图片";
+            UpdateSelectionPosition();
             await ShowCurrentImageAsync();
             StatusText.Text = $"扫描失败，已清空可能过期的列表：{exception.Message}";
             return false;
@@ -174,6 +180,8 @@ public partial class MainWindow : Window
     private void SetBusy(bool busy)
     {
         _isBusy = busy;
+        if (busy) LoadingText.Text = "正在处理图片…";
+        LoadingOverlay.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         RefreshButton.IsEnabled = !busy;
         ImageList.IsEnabled = !busy;
         PreviousButton.IsEnabled = !busy;
@@ -184,22 +192,40 @@ public partial class MainWindow : Window
 
     private async void ImageList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        _boundaryMessage = null;
+        UpdateSelectionPosition();
+        if (ImageList.SelectedItem is ImageFile selected)
+        {
+            ImageList.ScrollIntoView(selected);
+        }
         if (!_isBusy) await ShowCurrentImageAsync();
+    }
+
+    private void UpdateSelectionPosition()
+    {
+        var position = ImageList.SelectedIndex + 1;
+        PositionText.Text = $"{position} / {_images.Count}";
+        ImageCountText.Text = position > 0
+            ? $"第 {position} 张 / 共 {_images.Count} 张"
+            : $"共 {_images.Count} 张图片";
     }
 
     private async Task ShowCurrentImageAsync()
     {
         var requestId = ++_displayRequestId;
+        UpdateSelectionPosition();
         if (ImageList.SelectedItem is not ImageFile selected)
         {
             DisplayedImage.Source = null;
             EmptyHint.Visibility = Visibility.Visible;
             EmptyHint.Text = "请选择工作路径并刷新图片";
             ResetView();
-            ImageCountText.Text = $"{_images.Count} 张图片";
             return;
         }
 
+        DisplayedImage.Source = null;
+        EmptyHint.Text = "正在加载图片…";
+        EmptyHint.Visibility = Visibility.Visible;
         try
         {
             var bitmap = await Task.Run(() => LoadBitmap(selected.FullPath));
@@ -208,8 +234,7 @@ public partial class MainWindow : Window
             DisplayedImage.Width = bitmap.PixelWidth;
             DisplayedImage.Height = bitmap.PixelHeight;
             EmptyHint.Visibility = Visibility.Collapsed;
-            ImageCountText.Text = $"{ImageList.SelectedIndex + 1} / {_images.Count}";
-            StatusText.Text = selected.DisplayName;
+            StatusText.Text = _boundaryMessage ?? selected.DisplayName;
             FitImage();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or NotSupportedException or System.Runtime.InteropServices.COMException or ArgumentException or FormatException)
@@ -233,12 +258,28 @@ public partial class MainWindow : Window
 
     private void Previous_Click(object sender, RoutedEventArgs e)
     {
-        if (ImageList.SelectedIndex > 0) ImageList.SelectedIndex--;
+        if (ImageList.SelectedIndex > 0)
+        {
+            ImageList.SelectedIndex--;
+        }
+        else
+        {
+            _boundaryMessage = _images.Count == 0 ? "没有可浏览的图片。" : "已经是第一张图片。";
+            StatusText.Text = _boundaryMessage;
+        }
     }
 
     private void Next_Click(object sender, RoutedEventArgs e)
     {
-        if (ImageList.SelectedIndex >= 0 && ImageList.SelectedIndex < _images.Count - 1) ImageList.SelectedIndex++;
+        if (ImageList.SelectedIndex >= 0 && ImageList.SelectedIndex < _images.Count - 1)
+        {
+            ImageList.SelectedIndex++;
+        }
+        else
+        {
+            _boundaryMessage = _images.Count == 0 ? "没有可浏览的图片。" : "已经是最后一张图片。";
+            StatusText.Text = _boundaryMessage;
+        }
     }
 
     private async void MoveToOk_Click(object sender, RoutedEventArgs e)
